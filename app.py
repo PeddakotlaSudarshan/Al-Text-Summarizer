@@ -1,32 +1,67 @@
-from transformers import BartTokenizer, BartForConditionalGeneration
 import gradio as gr
+from transformers import pipeline
+from nltk.tokenize import sent_tokenize
+import nltk
 
-# Load the BART model
-model_name = "facebook/bart-large-cnn"
-tokenizer = BartTokenizer.from_pretrained(model_name)
-model = BartForConditionalGeneration.from_pretrained(model_name)
+# Download the tokenizer (required for the first time)
+nltk.download('punkt_tab')
 
-def summarize(text, num_points):
-    # Encode input and generate summary
-    inputs = tokenizer.encode("summarize: " + text, return_tensors="pt", max_length=1024, truncation=True)
-    summary_ids = model.generate(inputs, max_length=150, min_length=40, length_penalty=2.0, num_beams=4, early_stopping=True)
-    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+# Define the summarizer function
+def summarize_text(input_text, num_points):
+    # Initialize the summarization pipeline
+    summarizer = pipeline("summarization", model="t5-small", tokenizer="t5-small")
 
-    # Split summary into sentences and format as points
-    points = summary.split('. ')
-    limited_points = points[:num_points]
-    formatted_summary = '\n'.join([f"{i + 1}. {point.strip()}" for i, point in enumerate(limited_points) if point.strip()])
-    return formatted_summary
+    # Break the input text into chunks to fit model limits
+    max_chunk_size = 512  # Adjust based on model's max token limit
+    chunks = [input_text[i:i + max_chunk_size] for i in range(0, len(input_text), max_chunk_size)]
 
-iface = gr.Interface(
-    fn=summarize,
-    inputs=[
-        "text", 
-        gr.Number(label="Number of points", value=5, precision=0)
-    ],
-    outputs="text",
-    title="Text Summarization with BART",
-    description="Enter text and specify the number of points for summarization."
-)
+    # Summarize each chunk and store results
+    summarized_chunks = [summarizer(chunk, max_length=50, min_length=10, do_sample=False)[0]['summary_text'] for chunk in chunks]
 
-iface.launch()
+    # Combine all summaries
+    combined_summary = " ".join(summarized_chunks)
+
+    # Use NLTK to tokenize sentences, ensuring clear segmentation
+    sentences = sent_tokenize(combined_summary)
+
+    # Select the required number of unique points
+    unique_points = []
+    for sentence in sentences:
+        if len(unique_points) < num_points and sentence not in unique_points:
+            unique_points.append(sentence.strip().capitalize())
+
+    # Ensure the number of points matches the user's request
+    if len(unique_points) < num_points:
+        extra_sentences = [s.strip().capitalize() for s in sentences if s not in unique_points]
+        unique_points.extend(extra_sentences[:num_points - len(unique_points)])
+
+    # Return the summary as bullet points
+    return "\n".join(f"- {point}" for point in unique_points)
+
+# Define Gradio interface
+def gradio_interface():
+    with gr.Blocks() as demo:
+        gr.Markdown("### Text Summarizer")
+        gr.Markdown("Input your text and specify the number of points you want to summarize.")
+
+        # Input text
+        input_text = gr.TextArea(label="Enter Text to Summarize", placeholder="Paste your text here...", lines=10)
+
+        # Input box for number of points
+        num_points = gr.Number(label="Number of Summary Points", value=3)
+
+        # Output text
+        output_text = gr.TextArea(label="Summarized Text", placeholder="Your summarized text will appear here...", lines=10)
+
+        # Summarize button
+        summarize_button = gr.Button("Summarize")
+
+        # Define function for button
+        summarize_button.click(fn=summarize_text, inputs=[input_text, num_points], outputs=output_text)
+
+    return demo
+
+# Run the app
+if __name__ == "__main__":
+    demo = gradio_interface()
+    demo.launch()
